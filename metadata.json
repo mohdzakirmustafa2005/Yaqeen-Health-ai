@@ -1,0 +1,6 @@
+{
+  "name": "Yaqeen Health",
+  "description": "YAQEEN ALLAH WORKFORCE HEALTH AI — Privacy-first workforce & population health early warning, daily check-ins, mental wellness, and AI preventive guidance platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

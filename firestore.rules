@@ -1,0 +1,678 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- GLOBAL HARDENED HELPERS ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email_verified == true && request.auth.token.email == 'mohdzakirmustafa1@gmail.com')
+      );
+    }
+
+    // --- ENTITY VALIDATION HELPERS ---
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+             data.department is string && data.department.size() >= 1 && data.department.size() <= 60 &&
+             data.organizationId is string && data.organizationId.size() >= 1 && data.organizationId.size() <= 64 &&
+             data.role in ['INDIVIDUAL', 'COORDINATOR', 'ORG_ADMIN', 'PLATFORM_ADMIN'] &&
+             data.language in ['EN', 'HI', 'TE', 'UR'] &&
+             data.consentAnalytics is bool &&
+             data.consentAiGuidance is bool &&
+             data.consentCoordinatorOutreach is bool &&
+             data.remindersEnabled is bool &&
+             data.reminderHour is int && data.reminderHour >= 0 && data.reminderHour <= 23 &&
+             data.reminderMinute is int && data.reminderMinute >= 0 && data.reminderMinute <= 59 &&
+             data.onboardingCompleted is bool;
+    }
+
+    function isValidHealthCheckIn(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.dateKey is string && data.dateKey.size() >= 4 && data.dateKey.size() <= 20 &&
+             data.overallWellbeing is int && data.overallWellbeing >= 1 && data.overallWellbeing <= 10 &&
+             data.sleepQuality is int && data.sleepQuality >= 1 && data.sleepQuality <= 10 &&
+             data.sleepHours is number && data.sleepHours >= 0 && data.sleepHours <= 24 &&
+             data.stressLevel is int && data.stressLevel >= 1 && data.stressLevel <= 10 &&
+             data.energyLevel is int && data.energyLevel >= 1 && data.energyLevel <= 10 &&
+             data.fatigueLevel is int && data.fatigueLevel >= 1 && data.fatigueLevel <= 10 &&
+             data.mood in ['CALM', 'OPTIMISTIC', 'TIRED', 'ANXIOUS', 'OVERWHELMED', 'LOW'] &&
+             data.symptoms is list && data.symptoms.size() <= 15 && (data.symptoms.size() == 0 || data.symptoms[0] is string) &&
+             data.workStress is int && data.workStress >= 1 && data.workStress <= 10 &&
+             data.hydrationLiters is number && data.hydrationLiters >= 0 && data.hydrationLiters <= 10 &&
+             data.activityMinutes is int && data.activityMinutes >= 0 && data.activityMinutes <= 600 &&
+             data.computedRiskLevel in ['GREEN', 'YELLOW', 'ORANGE', 'RED'] &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+             (!('aiSummary' in data) || (data.aiSummary is string && data.aiSummary.size() <= 1000));
+    }
+
+    function isValidRiskAlert(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.riskLevel in ['GREEN', 'YELLOW', 'ORANGE', 'RED'] &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             data.explanation is string && data.explanation.size() >= 1 && data.explanation.size() <= 600 &&
+             data.recommendedNextStep is string && data.recommendedNextStep.size() >= 1 && data.recommendedNextStep.size() <= 400 &&
+             data.triggerFactors is list && data.triggerFactors.size() <= 10 && (data.triggerFactors.size() == 0 || data.triggerFactors[0] is string) &&
+             data.dateKey is string && data.dateKey.size() >= 4 && data.dateKey.size() <= 20 &&
+             data.status in ['ACTIVE', 'ACKNOWLEDGED', 'DISMISSED'];
+    }
+
+    function isValidRecommendation(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.category in [
+               'SLEEP', 'HYDRATION', 'ACTIVITY', 'PHYSICAL_ACTIVITY',
+               'STRESS', 'NUTRITION', 'BREAKS', 'MENTAL',
+               'CARDIOVASCULAR', 'HEALTH_FOLLOW_UP', 'MEDICAL'
+             ] &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             data.description is string && data.description.size() >= 1 && data.description.size() <= 500 &&
+             data.frequency in ['DAILY', 'WEEKLY'] &&
+             data.completed is bool &&
+             data.source in ['ENGINE', 'AI'];
+    }
+
+    function isValidAiMessage(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.sender in ['USER', 'ASSISTANT'] &&
+             data.text is string && data.text.size() >= 1 && data.text.size() <= 4000 &&
+             data.language in ['EN', 'HI', 'TE', 'UR'] &&
+             data.fallbackUsed is bool;
+    }
+
+    function isValidNotification(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.category in ['REMINDER', 'ALERT', 'RECOMMENDATION', 'SUMMARY', 'FOLLOW_UP'] &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             data.body is string && data.body.size() >= 1 && data.body.size() <= 400 &&
+             data.readStatus is bool;
+    }
+
+    function isValidAuditLog(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.action is string && data.action.size() >= 1 && data.action.size() <= 80 &&
+             data.details is string && data.details.size() >= 1 && data.details.size() <= 300 &&
+             data.actorRole is string && data.actorRole.size() >= 1 && data.actorRole.size() <= 30;
+    }
+
+    function isValidDoctorConversation(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.domain in ['DOCTOR', 'HEART_SPECIALIST'] &&
+             data.mode in [
+               'GENERAL_HEALTH', 'HEART_SPECIALIST', 'SYMPTOM_CHECKER',
+               'REPORT_EXPLAINER', 'WELLNESS', 'MENTAL_WELLNESS', 'HEALTH_NAVIGATOR'
+             ] &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             data.lastPreview is string && data.lastPreview.size() >= 1 && data.lastPreview.size() <= 240 &&
+             data.messageCount is int && data.messageCount >= 0 && data.messageCount <= 10000;
+    }
+
+    function isValidDoctorMessage(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.conversationId is string && data.conversationId.size() >= 1 && data.conversationId.size() <= 128 &&
+             data.sender in ['USER', 'ASSISTANT', 'SYSTEM_EMERGENCY'] &&
+             data.mode in [
+               'GENERAL_HEALTH', 'HEART_SPECIALIST', 'SYMPTOM_CHECKER',
+               'REPORT_EXPLAINER', 'WELLNESS', 'MENTAL_WELLNESS', 'HEALTH_NAVIGATOR'
+             ] &&
+             data.taskType is string && data.taskType.size() >= 1 && data.taskType.size() <= 60 &&
+             data.text is string && data.text.size() >= 1 && data.text.size() <= 6000 &&
+             (!('structuredJson' in data) || (data.structuredJson is string && data.structuredJson.size() <= 12000)) &&
+             data.providerUsed is string && data.providerUsed.size() >= 1 && data.providerUsed.size() <= 80 &&
+             data.feedback is int && data.feedback >= -1 && data.feedback <= 1 &&
+             data.emergencyTriggered is bool &&
+             data.fallbackUsed is bool &&
+             data.language in ['EN', 'HI', 'TE', 'UR'];
+    }
+
+    function isValidHeartProfile(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             (!('ageYears' in data) || (data.ageYears is int && data.ageYears >= 14 && data.ageYears <= 120)) &&
+             data.knownConditions is list && data.knownConditions.size() <= 15 &&
+             data.medications is list && data.medications.size() <= 20 &&
+             data.allergies is list && data.allergies.size() <= 20 &&
+             data.smokingStatus in ['NEVER', 'FORMER', 'CURRENT', 'PREFER_NOT_TO_SAY'] &&
+             data.familyHeartHistory is bool &&
+             data.baselineActivityLevel in ['SEDENTARY', 'LIGHT', 'MODERATE', 'VIGOROUS'];
+    }
+
+    function isValidHeartMeasurement(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.recordedAtIso is string && data.recordedAtIso.size() >= 4 && data.recordedAtIso.size() <= 32 &&
+             (!('restingHeartRateBpm' in data) || (data.restingHeartRateBpm is int && data.restingHeartRateBpm >= 25 && data.restingHeartRateBpm <= 250)) &&
+             (!('systolicMmHg' in data) || (data.systolicMmHg is int && data.systolicMmHg >= 50 && data.systolicMmHg <= 280)) &&
+             (!('diastolicMmHg' in data) || (data.diastolicMmHg is int && data.diastolicMmHg >= 30 && data.diastolicMmHg <= 180)) &&
+             (!('oxygenSaturationPct' in data) || (data.oxygenSaturationPct is int && data.oxygenSaturationPct >= 50 && data.oxygenSaturationPct <= 100)) &&
+             (!('weightKg' in data) || (data.weightKg is number && data.weightKg >= 20 && data.weightKg <= 350)) &&
+             (!('bloodGlucoseMgDl' in data) || (data.bloodGlucoseMgDl is number && data.bloodGlucoseMgDl >= 20 && data.bloodGlucoseMgDl <= 800)) &&
+             (!('totalCholesterolMgDl' in data) || (data.totalCholesterolMgDl is number && data.totalCholesterolMgDl >= 50 && data.totalCholesterolMgDl <= 600)) &&
+             (!('ldlCholesterolMgDl' in data) || (data.ldlCholesterolMgDl is number && data.ldlCholesterolMgDl >= 20 && data.ldlCholesterolMgDl <= 500)) &&
+             (!('hdlCholesterolMgDl' in data) || (data.hdlCholesterolMgDl is number && data.hdlCholesterolMgDl >= 10 && data.hdlCholesterolMgDl <= 200)) &&
+             data.symptoms is list && data.symptoms.size() <= 15 &&
+             data.activityLevel in ['RESTING', 'LIGHT_ACTIVITY', 'POST_EXERCISE', 'MODERATE', 'VIGOROUS'] &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+             data.sourceLabel in ['USER_ENTERED', 'DEMO_FICTIONAL'] &&
+             data.emergencyFlagged is bool;
+    }
+
+    function isValidBloodPressureRecord(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             (!('measurementId' in data) || (data.measurementId is string && data.measurementId.size() <= 128)) &&
+             data.recordedAtIso is string && data.recordedAtIso.size() >= 4 && data.recordedAtIso.size() <= 32 &&
+             data.systolicMmHg is int && data.systolicMmHg >= 50 && data.systolicMmHg <= 280 &&
+             data.diastolicMmHg is int && data.diastolicMmHg >= 30 && data.diastolicMmHg <= 180 &&
+             (!('pulseBpm' in data) || (data.pulseBpm is int && data.pulseBpm >= 25 && data.pulseBpm <= 250)) &&
+             data.postureOrContext in ['SITTING_REST', 'STANDING', 'MORNING', 'EVENING', 'POST_ACTIVITY'] &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 400)) &&
+             data.sourceLabel in ['USER_ENTERED', 'DEMO_FICTIONAL'];
+    }
+
+    function isValidHeartSymptomReport(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.symptoms is list && data.symptoms.size() <= 15 &&
+             data.severityScore is int && data.severityScore >= 1 && data.severityScore <= 10 &&
+             data.durationLabel is string && data.durationLabel.size() >= 1 && data.durationLabel.size() <= 80 &&
+             data.associatedSymptoms is list && data.associatedSymptoms.size() <= 15 &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+             data.emergencyTriggered is bool &&
+             data.screeningReason is string && data.screeningReason.size() >= 1 && data.screeningReason.size() <= 400 &&
+             data.aiSummary is string && data.aiSummary.size() >= 1 && data.aiSummary.size() <= 2000 &&
+             data.urgencyLevel in ['routine', 'prompt', 'urgent', 'emergency'];
+    }
+
+    function isValidHealthReportUpload(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             data.reportType in ['GENERAL_LAB', 'ECG_REPORT', 'CARDIAC_LAB', 'BLOOD_PRESSURE_LOG', 'OTHER'] &&
+             (!('fileName' in data) || (data.fileName is string && data.fileName.size() <= 120)) &&
+             data.extractedOrEnteredText is string && data.extractedOrEnteredText.size() >= 1 && data.extractedOrEnteredText.size() <= 5000 &&
+             data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 2000 &&
+             data.outOfRangeFindings is list && data.outOfRangeFindings.size() <= 15 &&
+             data.questionsForDoctor is list && data.questionsForDoctor.size() <= 10 &&
+             data.emergencyTriggered is bool &&
+             data.providerUsed is string && data.providerUsed.size() >= 1 && data.providerUsed.size() <= 80;
+    }
+
+    function isValidAiHealthInsight(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.domain in ['DOCTOR', 'HEART_SPECIALIST', 'REPORT_EXPLAINER', 'APPOINTMENT_PREP'] &&
+             data.taskType is string && data.taskType.size() >= 1 && data.taskType.size() <= 60 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+             data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 2000 &&
+             data.observations is list && data.observations.size() <= 10 &&
+             data.recommendations is list && data.recommendations.size() <= 10 &&
+             (!('recommendedDoctorType' in data) || (data.recommendedDoctorType is string && data.recommendedDoctorType.size() <= 80)) &&
+             data.urgency in ['routine', 'prompt', 'urgent', 'emergency'] &&
+             data.providerUsed is string && data.providerUsed.size() >= 1 && data.providerUsed.size() <= 80 &&
+             data.fallbackUsed is bool;
+    }
+
+    function isValidMedicalSafetyEvent(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.sourceModule is string && data.sourceModule.size() >= 1 && data.sourceModule.size() <= 60 &&
+             data.matchedSignals is list && data.matchedSignals.size() <= 15 &&
+             data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 400 &&
+             data.actionTaken is string && data.actionTaken.size() >= 1 && data.actionTaken.size() <= 120 &&
+             data.emergencyRegionHint is string && data.emergencyRegionHint.size() >= 1 && data.emergencyRegionHint.size() <= 60;
+    }
+
+    function isValidUserConsentRecord(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.consentAnalytics is bool &&
+             data.consentAiGuidance is bool &&
+             data.consentHeartAiContext is bool &&
+             data.consentReportAnalysis is bool &&
+             data.consentCoordinatorOutreach is bool &&
+             data.policyNote is string && data.policyNote.size() >= 1 && data.policyNote.size() <= 240;
+    }
+
+    // --- ADMINS (Read-only lookup) ---
+    match /admins/{adminUid} {
+      allow get: if isSignedIn() && (request.auth.uid == adminUid || isAdmin());
+      allow list, create, update, delete: if false;
+    }
+
+    // --- USERS & OWNER-ISOLATED HEALTH SUBCOLLECTIONS ---
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       isOwner(userId) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().role == 'INDIVIDUAL' &&
+                       incoming().keys().hasAll([
+                         'userId', 'displayName', 'department', 'organizationId', 'role', 'language',
+                         'consentAnalytics', 'consentAiGuidance', 'consentCoordinatorOutreach',
+                         'remindersEnabled', 'reminderHour', 'reminderMinute', 'onboardingCompleted',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'displayName', 'department', 'organizationId', 'role', 'language',
+                         'consentAnalytics', 'consentAiGuidance', 'consentCoordinatorOutreach',
+                         'remindersEnabled', 'reminderHour', 'reminderMinute', 'onboardingCompleted',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       (isOwner(userId) || isAdmin()) &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       (isAdmin() || (
+                         incoming().role == existing().role &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'displayName', 'department', 'organizationId', 'language',
+                           'consentAnalytics', 'consentAiGuidance', 'consentCoordinatorOutreach',
+                           'remindersEnabled', 'reminderHour', 'reminderMinute', 'onboardingCompleted',
+                           'updatedAt'
+                         ])
+                       ));
+
+      allow delete: if isOwner(userId) || isAdmin();
+
+      // Daily Health Check-Ins
+      match /checkIns/{checkInId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(checkInId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll([
+                           'userId', 'dateKey', 'overallWellbeing', 'sleepQuality', 'sleepHours',
+                           'stressLevel', 'energyLevel', 'fatigueLevel', 'mood', 'symptoms',
+                           'workStress', 'hydrationLiters', 'activityMinutes', 'computedRiskLevel',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'dateKey', 'overallWellbeing', 'sleepQuality', 'sleepHours',
+                           'stressLevel', 'energyLevel', 'fatigueLevel', 'mood', 'symptoms',
+                           'workStress', 'hydrationLiters', 'activityMinutes', 'notes',
+                           'computedRiskLevel', 'aiSummary', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidHealthCheckIn(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+        allow update: if isOwner(userId) &&
+                         isValidId(checkInId) &&
+                         isValidHealthCheckIn(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['aiSummary', 'notes', 'updatedAt']);
+        allow delete: if isOwner(userId);
+      }
+
+      // Early Health Warning Alerts
+      match /alerts/{alertId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(alertId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll([
+                           'userId', 'riskLevel', 'title', 'explanation', 'recommendedNextStep',
+                           'triggerFactors', 'dateKey', 'status', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'riskLevel', 'title', 'explanation', 'recommendedNextStep',
+                           'triggerFactors', 'dateKey', 'status', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidRiskAlert(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+        allow update: if isOwner(userId) &&
+                         isValidId(alertId) &&
+                         isValidRiskAlert(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         existing().status == 'ACTIVE' &&
+                         incoming().status in ['ACKNOWLEDGED', 'DISMISSED'] &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+        allow delete: if isOwner(userId);
+      }
+
+      // Personalized Recommendations
+      match /recommendations/{recId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(recId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll([
+                           'userId', 'category', 'title', 'description', 'frequency',
+                           'completed', 'source', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'category', 'title', 'description', 'frequency',
+                           'completed', 'source', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidRecommendation(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+        allow update: if isOwner(userId) &&
+                         isValidId(recId) &&
+                         isValidRecommendation(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['completed', 'updatedAt']);
+        allow delete: if isOwner(userId);
+      }
+
+      // Legacy AI Assistant Messages
+      match /aiMessages/{msgId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(msgId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll(['userId', 'sender', 'text', 'language', 'fallbackUsed', 'createdAt']) &&
+                         incoming().keys().hasOnly(['userId', 'sender', 'text', 'language', 'fallbackUsed', 'createdAt']) &&
+                         isValidAiMessage(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time;
+        allow update: if false;
+        allow delete: if isOwner(userId);
+      }
+
+      // Smart Notifications
+      match /notifications/{notifId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(notifId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll(['userId', 'category', 'title', 'body', 'readStatus', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'category', 'title', 'body', 'readStatus', 'createdAt', 'updatedAt']) &&
+                         isValidNotification(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+        allow update: if isOwner(userId) &&
+                         isValidId(notifId) &&
+                         isValidNotification(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['readStatus', 'updatedAt']);
+        allow delete: if isOwner(userId);
+      }
+
+      // Immutable Audit Logs
+      match /auditLogs/{logId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(logId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll(['userId', 'action', 'details', 'actorRole', 'createdAt']) &&
+                         incoming().keys().hasOnly(['userId', 'action', 'details', 'actorRole', 'createdAt']) &&
+                         isValidAuditLog(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time;
+        allow update, delete: if false;
+      }
+
+      // Doctor & Heart Specialist Conversations
+      match /doctorConversations/{convId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(convId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll(['userId', 'domain', 'mode', 'title', 'lastPreview', 'messageCount', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'domain', 'mode', 'title', 'lastPreview', 'messageCount', 'createdAt', 'updatedAt']) &&
+                         isValidDoctorConversation(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+        allow update: if isOwner(userId) &&
+                         isValidId(convId) &&
+                         isValidDoctorConversation(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'mode', 'lastPreview', 'messageCount', 'updatedAt']);
+        allow delete: if isOwner(userId);
+      }
+
+      // Doctor & Heart Specialist Messages
+      match /doctorMessages/{msgId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(msgId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll([
+                           'userId', 'conversationId', 'sender', 'mode', 'taskType', 'text',
+                           'providerUsed', 'feedback', 'emergencyTriggered', 'fallbackUsed', 'language',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'conversationId', 'sender', 'mode', 'taskType', 'text',
+                           'structuredJson', 'providerUsed', 'feedback', 'emergencyTriggered',
+                           'fallbackUsed', 'language', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidDoctorMessage(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+        allow update: if isOwner(userId) &&
+                         isValidId(msgId) &&
+                         isValidDoctorMessage(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['feedback', 'updatedAt']);
+        allow delete: if isOwner(userId);
+      }
+
+      // Heart Health Profile (Medications, Allergies, Conditions, Age, Activity)
+      match /heartProfiles/{profileId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(profileId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll([
+                           'userId', 'knownConditions', 'medications', 'allergies',
+                           'smokingStatus', 'familyHeartHistory', 'baselineActivityLevel',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'ageYears', 'knownConditions', 'medications', 'allergies',
+                           'smokingStatus', 'familyHeartHistory', 'baselineActivityLevel',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidHeartProfile(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+        allow update: if isOwner(userId) &&
+                         isValidId(profileId) &&
+                         isValidHeartProfile(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'ageYears', 'knownConditions', 'medications', 'allergies',
+                           'smokingStatus', 'familyHeartHistory', 'baselineActivityLevel', 'updatedAt'
+                         ]);
+        allow delete: if isOwner(userId);
+      }
+
+      // Heart Measurements (HR, BP, SpO2, Weight, Glucose, Cholesterol)
+      match /heartMeasurements/{measId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(measId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll([
+                           'userId', 'recordedAtIso', 'symptoms', 'activityLevel',
+                           'sourceLabel', 'emergencyFlagged', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'recordedAtIso', 'restingHeartRateBpm', 'systolicMmHg',
+                           'diastolicMmHg', 'oxygenSaturationPct', 'weightKg', 'bloodGlucoseMgDl',
+                           'totalCholesterolMgDl', 'ldlCholesterolMgDl', 'hdlCholesterolMgDl',
+                           'symptoms', 'activityLevel', 'notes', 'sourceLabel', 'emergencyFlagged',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidHeartMeasurement(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+        allow update: if isOwner(userId) &&
+                         isValidId(measId) &&
+                         isValidHeartMeasurement(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['notes', 'updatedAt']);
+        allow delete: if isOwner(userId);
+      }
+
+      // Dedicated Blood Pressure Records
+      match /bloodPressureRecords/{bpId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(bpId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll([
+                           'userId', 'recordedAtIso', 'systolicMmHg', 'diastolicMmHg',
+                           'postureOrContext', 'sourceLabel', 'createdAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'measurementId', 'recordedAtIso', 'systolicMmHg', 'diastolicMmHg',
+                           'pulseBpm', 'postureOrContext', 'notes', 'sourceLabel', 'createdAt'
+                         ]) &&
+                         isValidBloodPressureRecord(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time;
+        allow update: if false;
+        allow delete: if isOwner(userId);
+      }
+
+      // Heart Symptom Reports
+      match /heartSymptomReports/{repId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(repId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll([
+                           'userId', 'symptoms', 'severityScore', 'durationLabel',
+                           'associatedSymptoms', 'emergencyTriggered', 'screeningReason',
+                           'aiSummary', 'urgencyLevel', 'createdAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'symptoms', 'severityScore', 'durationLabel',
+                           'associatedSymptoms', 'notes', 'emergencyTriggered', 'screeningReason',
+                           'aiSummary', 'urgencyLevel', 'createdAt'
+                         ]) &&
+                         isValidHeartSymptomReport(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time;
+        allow update: if false;
+        allow delete: if isOwner(userId);
+      }
+
+      // Uploaded Health & Lab/ECG Reports
+      match /healthReportUploads/{uploadId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(uploadId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll([
+                           'userId', 'title', 'reportType', 'extractedOrEnteredText',
+                           'summary', 'outOfRangeFindings', 'questionsForDoctor',
+                           'emergencyTriggered', 'providerUsed', 'createdAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'title', 'reportType', 'fileName', 'extractedOrEnteredText',
+                           'summary', 'outOfRangeFindings', 'questionsForDoctor',
+                           'emergencyTriggered', 'providerUsed', 'createdAt'
+                         ]) &&
+                         isValidHealthReportUpload(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time;
+        allow update: if false;
+        allow delete: if isOwner(userId);
+      }
+
+      // Structured AI Health Insights
+      match /aiInsights/{insightId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(insightId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll([
+                           'userId', 'domain', 'taskType', 'title', 'summary',
+                           'observations', 'recommendations', 'urgency', 'providerUsed',
+                           'fallbackUsed', 'createdAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'domain', 'taskType', 'title', 'summary',
+                           'observations', 'recommendations', 'recommendedDoctorType',
+                           'urgency', 'providerUsed', 'fallbackUsed', 'createdAt'
+                         ]) &&
+                         isValidAiHealthInsight(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time;
+        allow update: if false;
+        allow delete: if isOwner(userId);
+      }
+
+      // Immutable Medical Safety Events
+      match /medicalSafetyEvents/{eventId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(eventId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll([
+                           'userId', 'sourceModule', 'matchedSignals', 'reason',
+                           'actionTaken', 'emergencyRegionHint', 'createdAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'sourceModule', 'matchedSignals', 'reason',
+                           'actionTaken', 'emergencyRegionHint', 'createdAt'
+                         ]) &&
+                         isValidMedicalSafetyEvent(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time;
+        allow update, delete: if false;
+      }
+
+      // Append-Only User Consent Records
+      match /consentRecords/{recordId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(recordId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll([
+                           'userId', 'consentAnalytics', 'consentAiGuidance',
+                           'consentHeartAiContext', 'consentReportAnalysis',
+                           'consentCoordinatorOutreach', 'policyNote', 'createdAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'consentAnalytics', 'consentAiGuidance',
+                           'consentHeartAiContext', 'consentReportAnalysis',
+                           'consentCoordinatorOutreach', 'policyNote', 'createdAt'
+                         ]) &&
+                         isValidUserConsentRecord(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time;
+        allow update, delete: if false;
+      }
+    }
+  }
+}
